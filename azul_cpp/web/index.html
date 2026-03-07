@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Azul 花砖物语 - 专业版</title>
+    <style>
+        :root {
+            --blue: #42a5f5;
+            --yellow: #fbc02d;
+            --red: #ef5350;
+            --black: #2c3e50;
+            --white: #ffffff;
+            --bg-color: #e0d7d0;
+            --tile-size: 40px;
+            --accent-brown: #5d4037;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            background-image: radial-gradient(rgba(0,0,0,0.05) 1px, transparent 0);
+            background-size: 20px 20px;
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            margin: 0;
+            display: flex;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 20px;
+            color: var(--accent-brown);
+        }
+
+        #main-layout { display: flex; gap: 30px; max-width: 1400px; width: 100%; }
+
+        /* --- 侧边栏 --- */
+        #sidebar {
+            width: 280px; background: #fdfaf8; border-radius: 16px; padding: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1); display: flex; flex-direction: column;
+            gap: 15px; height: fit-content; position: sticky; top: 20px; z-index: 100;
+        }
+
+        .setup-group { display: flex; flex-direction: column; gap: 5px; }
+        select { padding: 10px; border-radius: 8px; border: 1px solid #d7ccc8; }
+        .btn-primary { background: #2e7d32; color: white; padding: 12px; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; }
+
+        /* --- 游戏区域 --- */
+        #game-view { flex-grow: 1; display: flex; flex-direction: column; gap: 25px; align-items: center; }
+        .status-bar { background: var(--accent-brown); color: #fff; padding: 10px 30px; border-radius: 30px; }
+
+        .market-area { display: flex; flex-wrap: wrap; justify-content: center; gap: 20px; }
+        .factory {
+            width: 100px; height: 100px; background: radial-gradient(circle, #e6ceac, #bc9a6c);
+            border-radius: 50%; border: 4px solid #a67c52; display: grid; grid-template-columns: 1fr 1fr;
+            padding: 12px; gap: 8px;
+        }
+        .center-pot {
+            min-width: 150px; min-height: 100px; background: rgba(188, 154, 108, 0.3);
+            border-radius: 15px; border: 3px dashed #8b7355; display: flex; flex-wrap: wrap; 
+            justify-content: center; align-items: center; gap: 8px; padding: 10px;
+        }
+
+        /* --- 瓷砖与布局核心 (修复重叠的关键) --- */
+        .tile {
+            width: var(--tile-size); height: var(--tile-size); border-radius: 6px;
+            box-shadow: 0 4px 0 rgba(0,0,0,0.2); cursor: pointer; flex-shrink: 0;
+        }
+        .tile.blue { background: var(--blue); }
+        .tile.yellow { background: var(--yellow); }
+        .tile.red { background: var(--red); }
+        .tile.black { background: var(--black); }
+        .tile.white { background: var(--white); border: 1px solid #ddd; }
+        .tile.first { background: #9c27b0; }
+        .tile.selected { outline: 4px solid #ffeb3b; transform: scale(1.1); z-index: 10; }
+
+        .slot { width: var(--tile-size); height: var(--tile-size); border-radius: 6px; background: rgba(0,0,0,0.08); flex-shrink: 0; }
+        .slot.blue { background: rgba(66, 165, 245, 0.2); }
+        .slot.yellow { background: rgba(251, 192, 45, 0.2); }
+        .slot.red { background: rgba(239, 83, 80, 0.2); }
+        .slot.black { background: rgba(44, 62, 80, 0.2); }
+        .slot.white { background: rgba(255, 255, 255, 0.6); }
+
+        .boards-container { display: flex; gap: 30px; }
+        .player-board { background: #fff; padding: 25px; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.05); }
+        .player-board.active { border: 2px solid var(--accent-brown); }
+
+        /* 候选区阶梯对齐 */
+        .pattern-lines { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+        
+        /* 强制每一行横向排列，不准重叠 */
+        .row { 
+            display: flex !important; 
+            flex-direction: row !important; 
+            justify-content: flex-end; 
+            gap: 6px; 
+            padding: 4px;
+            min-width: 230px;
+            border-radius: 8px;
+        }
+        .row.highlight { outline: 2px dashed var(--red); background: rgba(239, 83, 80, 0.1); cursor: pointer; }
+
+        .wall-grid { display: grid; grid-template-columns: repeat(5, var(--tile-size)); gap: 6px; }
+
+        #history-list { font-size: 0.8rem; background: #efebe9; padding: 10px; border-radius: 8px; max-height: 150px; overflow-y: auto; list-style: none; }
+    </style>
+</head>
+<body>
+    <div id="main-layout">
+        <div id="sidebar">
+            <h2 style="text-align:center; margin-top:0;">AZUL</h2>
+            <div class="setup-group">
+                <label>玩家 1</label>
+                <select id="p0-type"><option value="human">人类</option><option value="ai">AI</option></select>
+            </div>
+            <div class="setup-group">
+                <label>玩家 2</label>
+                <select id="p1-type"><option value="human">人类</option><option value="ai" selected>AI</option></select>
+            </div>
+            <div class="setup-group">
+                <label>AI 强度</label>
+                <select id="ai-difficulty"><option value="1.0">1.0s</option><option value="2.0" selected>2.0s</option><option value="5.0">5.0s</option></select>
+            </div>
+            <button id="restart-btn" class="btn-primary">开始游戏</button>
+            <ul id="history-list"><li>等待加载...</li></ul>
+            <button id="undo-btn" style="cursor:pointer">悔棋</button>
+        </div>
+        <div id="game-view">
+            <div id="game-status" class="status-bar">加载引擎中...</div>
+            <div class="market-area" id="market"></div>
+            <div class="boards-container">
+                <div id="player-0"></div>
+                <div id="player-1"></div>
+            </div>
+        </div>
+    </div>
+    <script type="module" src="main.js"></script>
+</body>
+</html>

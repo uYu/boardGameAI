@@ -1,0 +1,187 @@
+/* ============================================================
+   1. 基础变量与调试辅助 (保留你的逻辑)
+   ============================================================ */
+   :root {
+    /* 核心配色：浅色用于渐变起始，深色用于阴影 */
+    --blue-light: #42a5f5;   --blue-dark: #1565c0;
+    --yellow-light: #fff176; --yellow-dark: #fbc02d;
+    --red-light: #ef5350;    --red-dark: #c62828;
+    --black-light: #616161;   --black-dark: #212121;
+    --white-light: #ffffff;  --white-dark: #e0e0e0;
+    
+    --bg-color: #d7ccc8;     /* 页面大背景 */
+    --board-bg: #fdf5e6;     /* 棋盘底色 */
+    --tile-size: 40px;
+}
+
+/* 调试辅助线 - 如果不需要了可以直接删掉这段 */
+.factory { outline: 1px dashed rgba(255, 0, 0, 0.3); }
+.center-pot { outline: 1px dashed rgba(0, 255, 0, 0.3); }
+.player-board { border: 2px solid #8b4513; } 
+
+/* ============================================================
+   2. 页面整体布局
+   ============================================================ */
+body {
+    background-color: var(--bg-color);
+    font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    display: flex;
+    justify-content: center;
+    padding: 20px;
+    margin: 0;
+}
+
+#game-container {
+    display: flex;
+    flex-direction: column;
+    gap: 30px;
+    align-items: center;
+}
+
+/* 状态提示栏 */
+.status-bar {
+    text-align: center;
+    font-size: 1.2rem;
+    font-weight: bold;
+    color: #5d4037;
+    margin-bottom: 10px;
+}
+
+/* ============================================================
+   3. 市场区域 (Factories & Center)
+   ============================================================ */
+.market-area {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 25px;
+    max-width: 900px;
+}
+
+.factory {
+    width: 100px;
+    height: 100px;
+    background: radial-gradient(circle, #d2b48c, #bc9a6c);
+    border-radius: 50%;
+    border: 5px solid #a67c52;
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    padding: 12px;
+    gap: 8px;
+    box-shadow: 0 6px 12px rgba(0,0,0,0.2);
+}
+
+.center-pot {
+    min-width: 160px;
+    min-height: 110px;
+    background: #cdaa7d;
+    border-radius: 20px;
+    display: flex;
+    flex-wrap: wrap;
+    padding: 15px;
+    gap: 6px;
+    border: 3px dashed #8b7355;
+    box-shadow: inset 0 0 15px rgba(0,0,0,0.1);
+}
+
+/* ============================================================
+   4. 个人版图 (Player Board)
+   ============================================================ */
+.boards-container {
+    display: flex;
+    gap: 40px;
+}
+
+.player-board {
+    background: linear-gradient(135deg, var(--board-bg) 0%, #faebd7 100%);
+    padding: 25px;
+    border-radius: 12px;
+    box-shadow: 0 15px 35px rgba(0,0,0,0.25);
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+.board-main {
+    display: flex;
+    gap: 30px;
+}
+
+/* 左侧 Pattern Lines 阶梯 */
+.pattern-lines {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end; /* 关键：形成阶梯状靠右对齐 */
+    gap: 6px;
+}
+
+.row {
+    display: flex;
+    gap: 6px;
+}
+
+/* 右侧 Wall 墙面 */
+.wall-grid {
+    display: grid;
+    grid-template-columns: repeat(5, var(--tile-size));
+    grid-template-rows: repeat(5, var(--tile-size));
+    gap: 6px;
+}
+
+/* 地板惩罚线 */
+.floor-line {
+    margin-top: 15px;
+    display: flex;
+    gap: 10px;
+    padding: 10px 5px;
+    border-top: 2px solid rgba(139, 69, 19, 0.2);
+}
+
+/* ============================================================
+   5. 瓷砖与插槽 (Tiles & Slots)
+   ============================================================ */
+.tile {
+    width: var(--tile-size);
+    height: var(--tile-size);
+    border-radius: 5px;
+    box-sizing: border-box;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.2rem;
+    transition: all 0.1s ease;
+    /* 3D 阴影：外部投影 + 内部微光 */
+    box-shadow: 0 3px 6px rgba(0,0,0,0.3), inset -2px -2px 4px rgba(0,0,0,0.2);
+}
+
+.tile:hover {
+    transform: translateY(-2px) scale(1.05);
+    box-shadow: 0 5px 10px rgba(0,0,0,0.4);
+}
+
+/* 颜色渐变定义 */
+.tile.blue   { background: linear-gradient(135deg, var(--blue-light), var(--blue-dark)); color: white; }
+.tile.yellow { background: linear-gradient(135deg, var(--yellow-light), var(--yellow-dark)); color: #5d4037; }
+.tile.red    { background: linear-gradient(135deg, var(--red-light), var(--red-dark)); color: white; }
+.tile.black  { background: linear-gradient(135deg, var(--black-light), var(--black-dark)); color: white; }
+.tile.white  { background: linear-gradient(135deg, var(--white-light), var(--white-dark)); border: 1px solid #ddd; color: #333; }
+.tile.first  { background: radial-gradient(circle, #e1bee7, #9c27b0); color: white; border: 2px solid #7b1fa2; font-size: 0.9rem; }
+
+/* 空插槽：模拟凹陷感 */
+.slot {
+    width: var(--tile-size);
+    height: var(--tile-size);
+    background-color: rgba(0, 0, 0, 0.05); /* 基础底色更淡一点 */
+    border-radius: 5px;
+    box-shadow: inset 1px 1px 3px rgba(0, 0, 0, 0.1);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+/* 墙面专用：带颜色的空插槽 (半透明) */
+.slot.blue   { background-color: rgba(66, 165, 245, 0.2); border: 1px dashed var(--blue-dark); }
+.slot.yellow { background-color: rgba(255, 241, 118, 0.2); border: 1px dashed var(--yellow-dark); }
+.slot.red    { background-color: rgba(239, 83, 80, 0.2); border: 1px dashed var(--red-dark); }
+.slot.black  { background-color: rgba(97, 97, 97, 0.2); border: 1px dashed var(--black-dark); }
+.slot.white  { background-color: rgba(255, 255, 255, 0.5); border: 1px dashed #ccc; }
