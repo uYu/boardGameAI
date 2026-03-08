@@ -25,27 +25,53 @@ class PatchworkEncoder:
         header = []
         header.append("#pragma once\n")
         header.append("#include <vector>\n#include <cstdint>\n")
-        header.append("// 确保这里定义了 uint128，如果 PatchworkGame.hpp 已经定义了，可以注释掉这行")
         header.append("typedef __int128 uint128;\n")
-        header.append("struct PieceData {\n    int id;\n    int cost;\n    int time;\n    int income;\n    std::vector<uint128> all_legal_masks;\n};\n")
-        header.append("const std::vector<PieceData> ALL_PIECES = {")
+        
+        header.append("// 优化的静态结构：只存储索引，不存储 vector")
+        header.append("struct PieceData {")
+        header.append("    int id;")
+        header.append("    int cost;")
+        header.append("    int time;")
+        header.append("    int income;")
+        header.append("    uint32_t mask_offset; // 在 GLOBAL_MASK_POOL 中的起点")
+        header.append("    uint32_t mask_count;  // Mask 的数量")
+        header.append("};\n")
+
+        # 预计算所有 Mask
+        all_masks_flat = []
+        pieces_meta = []
 
         for i, p in enumerate(self.patches):
             unique_masks = self._get_all_bitmasks(p['matrix'])
-            mask_strs = []
-            for m in unique_masks:
-                low = m & 0xFFFFFFFFFFFFFFFF
-                high = m >> 64
-                mask_strs.append(f"((uint128){high}ULL << 64 | {low}ULL)")
+            offset = len(all_masks_flat)
+            count = len(unique_masks)
             
-            masks_joined = ", ".join(mask_strs)
-            # 修正点：去掉元组括号，使用标准 C++ 初始化列表格式
-            line = f"    {{ {i}, {p['cost']}, {p['time']}, {p['income']}, {{ {masks_joined} }} }}"
-            if i < len(self.patches) - 1:
-                line += ","
-            header.append(f"{line} // {p['name']}")
-        
+            # 存入扁平数组
+            all_masks_flat.extend(unique_masks)
+            
+            # 记录元数据
+            pieces_meta.append({
+                "id": i, "cost": p['cost'], "time": p['time'], 
+                "income": p['income'], "offset": offset, "count": count, "name": p['name']
+            })
+
+        # 生成连续的 Mask 池 (对齐到 16 字节)
+        header.append(f"alignas(16) const uint128 GLOBAL_MASK_POOL[{len(all_masks_flat)}] = {{")
+        mask_strs = []
+        for m in all_masks_flat:
+            low = m & 0xFFFFFFFFFFFFFFFF
+            high = m >> 64
+            mask_strs.append(f"((uint128){high}ULL << 64 | {low}ULL)")
+        header.append("    " + ",\n    ".join(mask_strs))
+        header.append("};\n")
+
+        # 生成拼块索引表
+        header.append(f"const PieceData ALL_PIECES[{len(pieces_meta)}] = {{")
+        for p in pieces_meta:
+            line = f"    {{ {p['id']}, {p['cost']}, {p['time']}, {p['income']}, {p['offset']}, {p['count']} }}, // {p['name']}"
+            header.append(line)
         header.append("};")
+
         return "\n".join(header)
 
     def _get_all_bitmasks(self, shape):
