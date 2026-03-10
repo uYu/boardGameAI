@@ -3,6 +3,8 @@ import gymnasium as gym
 from gymnasium import spaces
 from game import ScoutGame
 import random
+import numpy as np
+
 # ==========================================
 # 2. Gym 环境类 (ScoutEnv)
 # ==========================================
@@ -11,89 +13,111 @@ class ScoutEnv(gym.Env):
         super().__init__()
         self.game = ScoutGame()
         
-        # 1. 动作空间更新：
-        # 根据公式 N*(N+1)/2，N=16 时 SHOW 为 136 个。
-        # OFFSET_SCOUT(138) + SCOUT(84) + SCOUT_SHOW(80左右) ≈ 300 左右
-        # 为了保险和对齐原逻辑，可以设为 310 或根据游戏类动态计算
         self.action_space = spaces.Discrete(380) 
 
-        # 2. 观测空间更新：将 20 全部改为 16
+        # AlphaDou 风格修改：
+        # 我们构建一个 (53, 16) 的矩阵：
+        # 16 是手牌最大长度 (宽度)
+        # 53 是特征维度 (高度)，包含：
+        # - 10层: 手牌 One-hot
+        # - 10层: 桌面牌 One-hot
+        # - 2层:  手牌连接性 (是否成顺/成对)
+        # - 10层: 全场消耗牌统计 (平铺)
+        # - 21层: 全局信息 (得分、筹码、对手张数等，平铺)
         self.observation_space = spaces.Dict({
-            "hand": spaces.Box(low=0, high=1, shape=(1, 16, 10), dtype=np.float32),
-            "table": spaces.Box(low=0, high=1, shape=(1, 8, 10), dtype=np.float32),
-            "spent": spaces.Box(low=0, high=11, shape=(10,), dtype=np.float32),  # 必须是 (10,)
-            "hand_counts": spaces.Box(low=0, high=11, shape=(10,), dtype=np.float32),
-            "global_info": spaces.Box(low=0, high=1, shape=(21,), dtype=np.float32),
+            "obs_matrix": spaces.Box(low=0, high=11, shape=(53, 16), dtype=np.float32),
             "phase": spaces.Box(low=0, high=1, shape=(3,), dtype=np.float32)
         })
+
 
     def _get_obs(self, p=0):
         # 容错处理
         if not hasattr(self.game, 'hands'): self.game.reset()
         
+        # 获取当前玩家手牌数值 (1-10)
         h_vals = self.game._get_active_hand(p)
-        # 3. 矩阵维度对齐：从 20 改为 16
-        h_mat = np.zeros((1, 16, 10), dtype=np.float32)
-        h_cnt = np.zeros(10, dtype=np.float32)
-        for i, v in enumerate(h_vals[:16]): # 确保不越界
-            h_mat[0, i, v-1] = 1.0
-            h_cnt[v-1] += 1.0
         
-        t_mat = np.zeros((1, 16, 10), dtype=np.float32)
-        # 获取桌面牌数值列表
-        raw_table_cards = [c[0] for c in self.game.table_cards]
-        num_on_table = len(raw_table_cards)
+        # ==========================================
+        # 1. 空间特征 (Spatial Features) - 针对每一张牌的局部特征
+        # ==========================================
         
-        # 设定我们想要的观测宽度
-        obs_width = 8
-        t_mat = np.zeros((1, obs_width, 10), dtype=np.float32)
-        
-        selected_cards = []
-        if num_on_table <= obs_width:
-            # 情况 A: 桌面牌不多，直接全部放入
-            selected_cards = raw_table_cards
-        else:
-            # 情况 B: 桌面牌太多，取左边 3 张和右边 3 张
-            # 例如桌面 7 张 [1, 2, 3, 4, 5, 6, 7] -> [1, 2, 3, 5, 6, 7]
-            left_side = raw_table_cards[:obs_width//2]
-            right_side = raw_table_cards[-(obs_width//2):]
-            selected_cards = left_side + right_side
-            
-        # 填充到矩阵
-        for i, v in enumerate(selected_cards):
-            if i < obs_width: # 安全检查
-                t_mat[0, i, v-1] = 1.0
+        # Hand One-hot: (10, 16) - 每一列代表一个位置，每一行代表数字 1-10
+        h_mat = np.zeros((10, 16), dtype=np.float32)
+        for i, v in enumerate(h_vals[:16]):
+            h_mat[v-1, i] = 1.0
 
-        g_info = []
+        # Table One-hot: (10, 16) - 桌面牌对齐
+        # AlphaDou 建议将桌面牌放在与手牌相同的观察维度
+        t_mat = np.zeros((10, 16), dtype=np.float32)
+        raw_table_cards = [c[0] for c in self.game.table_cards]
+        for i, v in enumerate(raw_table_cards[:16]):
+            t_mat[v-1, i] = 1.0
+
+        # 手牌连接性特征 (Scout 核心：相邻牌是否成对或成顺)
+        connectivity = np.zeros((2, 16), dtype=np.float32)
+        for i in range(len(h_vals) - 1):
+            if h_vals[i] == h_vals[i+1]:
+                connectivity[0, i] = 1.0  # 对子倾向
+            if abs(h_vals[i] - h_vals[i+1]) == 1:
+                connectivity[1, i] = 1.0  # 顺子倾向
+
+        # ==========================================
+        # 2. 全局特征平铺 (Broadcasting Features) - AlphaDou 的精髓
+        # 将全局数值复制 16 份，填充到矩阵行中，让卷积核在任何位置都能读到全局状态
+        # ==========================================
+        
+        # 消耗牌统计 (Spent): (10, 16)
+        # 每一行代表 1-10 消耗了多少张，整行值相同
+        spent_mat = np.zeros((10, 16), dtype=np.float32)
+        for val, count in self.game.card_counts_spent.items():
+            if 1 <= val <= 10:
+                spent_mat[val-1, :] = count / 5.0 # 归一化
+
+        # 玩家状态信息 (Global Info): (21, 16)
+        # 包含：剩余手牌数、得分、筹码、Owner、Phase 等
+        # 这里将你原来的 21 维 global_info 平铺到 16 个宽度
+        g_info_raw = []
         for i in range(4):
             idx = (p + i) % 4
-            g_info.extend([len(self.game.hands[idx])/12.0, self.game.collected_cards[idx]/45.0, 
-                           self.game.vp_tokens[idx]/20.0, 1.0 if self.game.scout_show_tokens[idx] else 0.0])
+            g_info_raw.extend([
+                len(self.game.hands[idx])/12.0, 
+                self.game.collected_cards[idx]/45.0, 
+                self.game.vp_tokens[idx]/20.0, 
+                1.0 if self.game.scout_show_tokens[idx] else 0.0
+            ])
         
-        # Table Owner One-hot (4维) + 我是否是 Owner (1维) = 5维
+        # Table Owner & Phase
         owner_oh = np.zeros(4)
         if self.game.table_owner != -1:
             owner_oh[(self.game.table_owner - p + 4) % 4] = 1.0
-        g_info.extend(owner_oh.tolist())
-        g_info.append(1.0 if self.game.table_owner == p else 0.0)
+        g_info_raw.extend(owner_oh.tolist())
+        g_info_raw.append(1.0 if self.game.table_owner == p else 0.0)
+        
+        global_mat = np.tile(np.array(g_info_raw).reshape(-1, 1), (1, 16)) # (21, 16)
 
+        # ==========================================
+        # 3. 最终组合 (Feature Fusion)
+        # ==========================================
+        
+        # 总行数：10(Hand) + 10(Table) + 2(Connect) + 10(Spent) + 21(Global) = 53 行
+        # 最终形状 (53, 16)
+        obs_matrix = np.vstack([
+            h_mat,          # 0-9
+            t_mat,          # 10-19
+            connectivity,   # 20-21
+            spent_mat,      # 22-31
+            global_mat      # 32-52
+        ])
+
+        # 为了适配 Gymnasium 空间，我们也保留简单的 Phase One-hot
         phase_oh = np.zeros(3)
         phase_oh[0 if self.game.phase == "PLAY" else 1] = 1.0
 
-# --- 3. 消耗牌处理 (压缩为 10 维计数向量) ---
-        spent_vec = np.zeros(10, dtype=np.float32)
-        for val, count in self.game.card_counts_spent.items():
-            if 1 <= val <= 10:
-                spent_vec[val-1] = float(count)
-
         return {
-            "hand": h_mat,
-            "table": t_mat,
-            "spent": spent_vec,
-            "hand_counts": h_cnt,
-            "global_info": np.array(g_info, dtype=np.float32),
-            "phase": phase_oh
+            "obs_matrix": obs_matrix.astype(np.float32), # (53, 16)
+            "phase": phase_oh.astype(np.float32)
         }
+
     def reset(self, seed=None, options=None):
         self.game.reset()
         self._run_opponents(verbose=False)
