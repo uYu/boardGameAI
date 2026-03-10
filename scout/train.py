@@ -2,7 +2,7 @@ import gymnasium as gym
 from sb3_contrib import MaskablePPO
 from sb3_contrib.common.wrappers import ActionMasker
 from gym_env import ScoutEnv
-from network import ScoutAlphaDouStyleExtractor, AlphaDouPolicy
+from network import ScoutFullFeatureExtractor, AlphaDouPolicy
 from callbacks import ScoutWinRateCallback
 
 from typing import Callable
@@ -33,7 +33,7 @@ def train():
 
     # 策略参数：使用自定义提取器 + 深度 MLP
     policy_kwargs = dict(
-        features_extractor_class=ScoutAlphaDouStyleExtractor,
+        features_extractor_class=ScoutFullFeatureExtractor,
         features_extractor_kwargs=dict(features_dim=1024),
         net_arch=dict(pi=[512, 256], vf=[512, 256]) # 这里的 pi 和 vf 会接在 extractor 之后
     )

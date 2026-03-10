@@ -27,64 +27,39 @@ class ResidualBlock1D(nn.Module):
         out += identity
         return self.relu(out)
 
-class ScoutAlphaDouStyleExtractor(BaseFeaturesExtractor):
-    def __init__(self, observation_space: spaces.Dict, features_dim: int = 1024):
-        # 这里的 features_dim 必须和 policy_kwargs 里的匹配
+class ScoutFullFeatureExtractor(BaseFeaturesExtractor):
+    def __init__(self, observation_space, features_dim=256): # features_dim 从 512/1024 降到 256
         super().__init__(observation_space, features_dim)
         
-        # 输入通道数是 53 (根据我们之前定义的矩阵行数)
-        # 结构：卷积 -> 残差层 -> 压扁
-        self.cnn_backbone = nn.Sequential(
-            nn.Conv1d(53, 128, kernel_size=3, padding=1),
+        # 这里的思路是：保留 ResNet 结构，但把每一层的宽度切一半甚至更多
+        self.cnn = nn.Sequential(
+            # 输入 63 通道 -> 降到 64 通道 (之前是 128/256)
+            nn.Conv1d(63, 64, kernel_size=3, padding=1),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+            # 简化版残差组 1
+            ResidualBlock1D(64),
+            # 压缩长度 16 -> 8，通道数只增加到 128
+            nn.Conv1d(64, 128, kernel_size=3, stride=2, padding=1),
             nn.BatchNorm1d(128),
             nn.ReLU(),
+            # 简化版残差组 2
             ResidualBlock1D(128),
-            ResidualBlock1D(128),
-            ResidualBlock1D(128),
-            # 16 -> 8
-            nn.Conv1d(128, 256, kernel_size=3, stride=2, padding=1),
-            nn.BatchNorm1d(256),
-            nn.ReLU(),
-            ResidualBlock1D(256),
-            ResidualBlock1D(256),
-            nn.Flatten() # 输出维度: 256 * 8 = 2048
+            nn.Flatten() # 128 * 8 = 1024
         )
         
-        # 处理辅助信息 phase (3维)
-        self.phase_mlp = nn.Sequential(
-            nn.Linear(3, 64),
+        # 最终映射层也变小
+        self.output_layer = nn.Sequential(
+            nn.Linear(1024, features_dim),
             nn.ReLU()
-        )
-        
-        # 最终融合层: 2048 (CNN) + 64 (Phase) = 2112
-        self.fusion = nn.Sequential(
-            nn.Linear(2112, features_dim),
-            nn.LayerNorm(features_dim),
-            nn.ReLU(),
         )
 
     def forward(self, observations):
-        # 1. 核心修复：现在从 observations 中取 "obs_matrix"
-        # 形状: (Batch, 53, 16)
-        x = observations["obs_matrix"]
-        
-        # 2. 提取特征
-        cnn_out = self.cnn_backbone(x)
-        phase_out = self.phase_mlp(observations["phase"])
-        
-        # 3. 拼接并输出
-        combined = th.cat([cnn_out, phase_out], dim=1)
-        return self.fusion(combined)
+        return self.output_layer(self.cnn(observations))
 
 # ==========================================
 # 3. AlphaDou 策略网络 (Custom Policy)
 # 实现论文中的胜率 (WinRate) 与 期望 (Expectation) 的分离预测
-# ==========================================
-# ==========================================
-# 1. 定义一个适配 SB3 的双输出 Identity 层
-# ==========================================
-# ==========================================
-# 1. 完善后的双输出 Identity 层
 # ==========================================
 class AlphaDouMlpExtractor(nn.Module):
     def __init__(self, features_dim: int):

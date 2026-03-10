@@ -1,5 +1,6 @@
 import itertools
 import random
+import numpy as np
 
 # ==========================================
 # 1. 游戏逻辑类 (ScoutGame)
@@ -41,6 +42,15 @@ class ScoutGame:
         self.scout_show_tokens = {i: True for i in range(self.num_players)}
         self.round_scores = {i: 0 for i in range(self.num_players)}
         self.card_counts_spent = {i: 0 for i in range(1, 11)}
+
+        self.scores = {i: 0 for i in range(self.num_players)} 
+        self.has_scout_token = {i: True for i in range(self.num_players)} 
+        
+        # 必须初始化动作历史列表，否则 get_action_history_vec 会报错
+        self.action_history = [] 
+        
+        # 之前的 card_counts_spent 建议改为全局统计
+        self.card_counts_spent = {v: 0 for v in range(1, 11)}
 
     def _get_active_hand(self, player):
         """获取当前玩家视角下的手牌数值列表"""
@@ -100,6 +110,10 @@ class ScoutGame:
         return side, rem // 2, rem % 2
         
     def step(self, action):
+        action_type = 0.5 if action >= self.OFFSET_SCOUT else 1.0
+        # 强度简单定义：牌的数量
+        power = len(self.table_cards) if action_type == 1.0 else 1
+        self.action_history.append({'type': action_type, 'power': power})
         p = self.current_player
 
         if action == self.ACTION_PASS:
@@ -264,6 +278,17 @@ class ScoutGame:
             
             self.round_scores[i] = pos - neg
 
+    def get_action_history_vec(self):
+        """返回最近3手动作的编码，用于特征矩阵的最后6行"""
+        vec = np.zeros(6, dtype=np.float32)
+        # 取最近3个动作，每个动作占2位：[动作类型, 强度]
+        # 类型编码建议：0:None, 0.5:Scout, 1.0:Show
+        recent = self.action_history[-3:]
+        for i, action_info in enumerate(recent):
+            vec[i*2] = action_info['type']  # 0.5 或 1.0
+            vec[i*2 + 1] = action_info['power'] / 10.0 # 归一化强度
+        return vec
+        
     def get_state(self):
         return {
             "hands": {i: self._get_active_hand(i) for i in range(self.num_players)},

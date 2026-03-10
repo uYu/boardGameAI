@@ -14,109 +14,79 @@ class ScoutEnv(gym.Env):
         self.game = ScoutGame()
         
         self.action_space = spaces.Discrete(380) 
-
-        # AlphaDou 风格修改：
-        # 我们构建一个 (53, 16) 的矩阵：
-        # 16 是手牌最大长度 (宽度)
-        # 53 是特征维度 (高度)，包含：
-        # - 10层: 手牌 One-hot
-        # - 10层: 桌面牌 One-hot
-        # - 2层:  手牌连接性 (是否成顺/成对)
-        # - 10层: 全场消耗牌统计 (平铺)
-        # - 21层: 全局信息 (得分、筹码、对手张数等，平铺)
-        self.observation_space = spaces.Dict({
-            "obs_matrix": spaces.Box(low=0, high=11, shape=(53, 16), dtype=np.float32),
-            "phase": spaces.Box(low=0, high=1, shape=(3,), dtype=np.float32)
-        })
-
+        self.observation_space = spaces.Box(
+            low=0, 
+            high=1, 
+            shape=(63, 16), # 63层特征，宽度16
+            dtype=np.float32
+        )
 
     def _get_obs(self, p=0):
-        # 容错处理
-        if not hasattr(self.game, 'hands'): self.game.reset()
+        # 矩阵宽度固定为 16 (最大手牌数)
+        W = 16
         
-        # 获取当前玩家手牌数值 (1-10)
+        # --- 1. 基础手牌 & 桌面 (20行) ---
         h_vals = self.game._get_active_hand(p)
-        
-        # ==========================================
-        # 1. 空间特征 (Spatial Features) - 针对每一张牌的局部特征
-        # ==========================================
-        
-        # Hand One-hot: (10, 16) - 每一列代表一个位置，每一行代表数字 1-10
-        h_mat = np.zeros((10, 16), dtype=np.float32)
-        for i, v in enumerate(h_vals[:16]):
+        h_mat = np.zeros((10, W), dtype=np.float32)
+        for i, v in enumerate(h_vals[:W]):
             h_mat[v-1, i] = 1.0
-
-        # Table One-hot: (10, 16) - 桌面牌对齐
-        # AlphaDou 建议将桌面牌放在与手牌相同的观察维度
-        t_mat = np.zeros((10, 16), dtype=np.float32)
+                
+        t_mat = np.zeros((10, W), dtype=np.float32)
         raw_table_cards = [c[0] for c in self.game.table_cards]
-        for i, v in enumerate(raw_table_cards[:16]):
+        for i, v in enumerate(raw_table_cards[:W]):
             t_mat[v-1, i] = 1.0
 
-        # 手牌连接性特征 (Scout 核心：相邻牌是否成对或成顺)
-        connectivity = np.zeros((2, 16), dtype=np.float32)
+        # --- 2. 背面手牌 (10行) ---
+        h_back_vals = [c[1] for c in self.game.hands[p]]
+        h_back_mat = np.zeros((10, W), dtype=np.float32)
+        for i, v in enumerate(h_back_vals[:W]):
+            h_back_mat[v-1, i] = 1.0
+
+        # --- 3. 连接性 (4行: 对子、顺子、潜在对、潜在顺) ---
+        conn_mat = np.zeros((4, W), dtype=np.float32)
         for i in range(len(h_vals) - 1):
-            if h_vals[i] == h_vals[i+1]:
-                connectivity[0, i] = 1.0  # 对子倾向
-            if abs(h_vals[i] - h_vals[i+1]) == 1:
-                connectivity[1, i] = 1.0  # 顺子倾向
+            if h_vals[i] == h_vals[i+1]: conn_mat[0, i] = 1.0 # 现成对子
+            if abs(h_vals[i] - h_vals[i+1]) == 1: conn_mat[1, i] = 1.0 # 现成顺子
+        # 潜在组合 (中间隔一张的情况，用于引导 Scout 拿牌)
+        for i in range(len(h_vals) - 2):
+            if h_vals[i] == h_vals[i+2]: conn_mat[2, i] = 1.0
+            if abs(h_vals[i] - h_vals[i+2]) == 1: conn_mat[3, i] = 1.0
 
-        # ==========================================
-        # 2. 全局特征平铺 (Broadcasting Features) - AlphaDou 的精髓
-        # 将全局数值复制 16 份，填充到矩阵行中，让卷积核在任何位置都能读到全局状态
-        # ==========================================
-        
-        # 消耗牌统计 (Spent): (10, 16)
-        # 每一行代表 1-10 消耗了多少张，整行值相同
-        spent_mat = np.zeros((10, 16), dtype=np.float32)
-        for val, count in self.game.card_counts_spent.items():
-            if 1 <= val <= 10:
-                spent_mat[val-1, :] = count / 5.0 # 归一化
+        # --- 4. 全局统计 (10行: 1-10 消耗程度) ---
+        spent_vec = np.array([self.game.card_counts_spent.get(v, 0)/5.0 for v in range(1, 11)])
+        spent_mat = np.tile(spent_vec.reshape(10, 1), (1, W))
 
-        # 玩家状态信息 (Global Info): (21, 16)
-        # 包含：剩余手牌数、得分、筹码、Owner、Phase 等
-        # 这里将你原来的 21 维 global_info 平铺到 16 个宽度
-        g_info_raw = []
-        for i in range(4):
-            idx = (p + i) % 4
-            g_info_raw.extend([
-                len(self.game.hands[idx])/12.0, 
-                self.game.collected_cards[idx]/45.0, 
-                self.game.vp_tokens[idx]/20.0, 
-                1.0 if self.game.scout_show_tokens[idx] else 0.0
-            ])
-        
-        # Table Owner & Phase
-        owner_oh = np.zeros(4)
-        if self.game.table_owner != -1:
-            owner_oh[(self.game.table_owner - p + 4) % 4] = 1.0
-        g_info_raw.extend(owner_oh.tolist())
-        g_info_raw.append(1.0 if self.game.table_owner == p else 0.0)
-        
-        global_mat = np.tile(np.array(g_info_raw).reshape(-1, 1), (1, 16)) # (21, 16)
+        # --- 5. 安全/绝张 (1行) ---
+        safe_vec = np.zeros(10)
+        for v in range(1, 11):
+            if self.game.card_counts_spent.get(v, 0) >= 5: safe_vec[v-1] = 1.0
+        # 将绝张信息平铺到对应手牌位置上
+        safe_row = np.zeros((1, W))
+        for i, v in enumerate(h_vals[:W]):
+            if safe_vec[v-1] == 1.0: safe_row[0, i] = 1.0
 
-        # ==========================================
-        # 3. 最终组合 (Feature Fusion)
-        # ==========================================
-        
-        # 总行数：10(Hand) + 10(Table) + 2(Connect) + 10(Spent) + 21(Global) = 53 行
-        # 最终形状 (53, 16)
-        obs_matrix = np.vstack([
-            h_mat,          # 0-9
-            t_mat,          # 10-19
-            connectivity,   # 20-21
-            spent_mat,      # 22-31
-            global_mat      # 32-52
+        # --- 6. 对手状态 (12行: 3个对手 x 4个特征) ---
+        # 特征包含: 张数/12, 得分/30, 是否有Scout Token, 相对位置
+        opp_mat = np.zeros((12, W), dtype=np.float32)
+        for idx in range(3):
+            opp_idx = (p + idx + 1) % 4
+            opp_info = [
+                len(self.game.hands[opp_idx]) / 12.0,
+                self.game.scores[opp_idx] / 30.0,
+                1.0 if self.game.has_scout_token[opp_idx] else 0.0,
+                (idx + 1) / 3.0
+            ]
+            opp_mat[idx*4 : (idx+1)*4, :] = np.tile(np.array(opp_info).reshape(4, 1), (1, W))
+
+        # --- 7. 历史动作 (6行: 前三轮动作编码) ---
+        # 简化：每手2行(动作类型 0/1, 强度)，共6行
+        hist_mat = np.tile(self.game.get_action_history_vec().reshape(6, 1), (1, W))
+
+        # --- 最终拼接 (63行) ---
+        obs = np.vstack([
+            h_mat, t_mat, h_back_mat, conn_mat, spent_mat, safe_row, opp_mat, hist_mat
         ])
-
-        # 为了适配 Gymnasium 空间，我们也保留简单的 Phase One-hot
-        phase_oh = np.zeros(3)
-        phase_oh[0 if self.game.phase == "PLAY" else 1] = 1.0
-
-        return {
-            "obs_matrix": obs_matrix.astype(np.float32), # (53, 16)
-            "phase": phase_oh.astype(np.float32)
-        }
+        return obs.astype(np.float32)
 
     def reset(self, seed=None, options=None):
         self.game.reset()
@@ -127,78 +97,6 @@ class ScoutEnv(gym.Env):
         mask = np.zeros(380, dtype=np.int8)
         for a in self.game.get_legal_actions(0): mask[a] = 1
         return mask
-
-    def _calculate_hand_strength(self, hand_cards):
-        """
-        计算手牌的结构强度。
-        优化目标：
-        1. 识别已有的对子(Same-value)和顺子(Sequence)。
-        2. 识别潜在的组合（Gap-1 的邻近牌，如手牌中的 2, 3）。
-        3. 惩罚拆散长序列的行为。
-        """
-        if not hand_cards or len(hand_cards) < 2:
-            return 0
-        
-        strength = 0.0
-        n = len(hand_cards)
-        # 基础分：手牌越少，离胜利越近
-        strength += (12 - n) * 1.5
-        visited = [False] * n  # 标记是否已计入成组分，避免重复计算
-
-        # --- 第一阶段：计算已成组的强度 (对子/顺子) ---
-        i = 0
-        while i < n:
-            if visited[i]:
-                i += 1
-                continue
-                
-            # 1. 检测相同数字 (对子/三张/炸弹)
-            count_same = 1
-            while i + count_same < n and hand_cards[i + count_same] == hand_cards[i]:
-                count_same += 1
-            
-            # 2. 检测顺子 (正向或反向)
-            count_seq = 1
-            # 正向顺子: 1, 2, 3
-            while i + count_seq < n and hand_cards[i + count_seq] == hand_cards[i + count_seq - 1] + 1:
-                count_seq += 1
-            
-            # 反向顺子: 3, 2, 1 (Scout 规则中手牌物理顺序固定，反向顺子同样强大)
-            count_rev = 1
-            while i + count_rev < n and hand_cards[i + count_rev] == hand_cards[i + count_rev - 1] - 1:
-                count_rev += 1
-                
-            # 取当前位置起始的最优组合
-            max_group = max(count_same, count_seq, count_rev)
-            
-            if max_group >= 2:
-                # 权重公式：长度的 1.5 次方，鼓励凑长手。
-                # 2张: 2.8分, 3张: 5.2分, 4张: 8.0分, 5张: 11.1分
-                strength += (max_group ** 1.5)
-                # 标记这些牌已访问
-                for j in range(i, i + max_group):
-                    visited[j] = True
-                i += max_group
-            else:
-                i += 1
-
-        # --- 第二阶段：计算潜在关联 (解决 Case 2) ---
-        # 检查那些没有成组，但彼此相邻且数值差为 1 的牌 (如 [2, 3, 9] 中的 2和3)
-        for k in range(n - 1):
-            if not visited[k] or not visited[k+1]:
-                diff = abs(hand_cards[k] - hand_cards[k+1])
-                if diff == 1:
-                    # 虽然目前只是孤零零的两个相邻数字，但它们是顺子的种子
-                    strength += 0.8 
-                elif diff == 0:
-                    # 这里理论上在第一阶段会被 visited 标记，作为冗余保护
-                    strength += 1.0
-
-        # --- 第三阶段：数值权重 (可选) ---
-        # 在 Scout 中，小牌（1, 2）通常比大牌（9, 10）更难出掉或更容易被压制
-        # 这里的 strength 可以根据剩余手牌的平均值微调，但建议先观察前两步效果
-
-        return strength
 
     def step(self, action, verbose=False):
         mask = self._gen_mask()
@@ -234,34 +132,6 @@ class ScoutEnv(gym.Env):
                 reward -= 2.0 # 适当增加一点垫底惩罚
 
         return self._get_obs(0), reward, self.game.done, False, {"action_mask": self._gen_mask()}
-
-    def _calculate_break_penalty(self, hand, start, length):
-        """惩罚拆散原本相连的牌"""
-        penalty = 0.0
-        if length <= 0: return 0
-        first = hand[start]
-        last = hand[start + length - 1]
-
-        # 检查左邻居
-        if start > 0 and (hand[start-1] == first or abs(hand[start-1] - first) == 1):
-            penalty -= 2.0
-        # 检查右邻居
-        if start + length < len(hand) and (hand[start+length] == last or abs(hand[start+length] - last) == 1):
-            penalty -= 2.0
-        return penalty
-
-    def _calculate_scout_efficiency_penalty(self, hand, card_val, chosen_ins):
-        """惩罚没有插在最优位置的 Scout 行为"""
-        strengths = []
-        for i in range(len(hand) + 1):
-            tmp = hand[:i] + [card_val] + hand[i:]
-            strengths.append(self._calculate_hand_strength(tmp))
-
-        max_s = max(strengths)
-        actual_s = strengths[chosen_ins] if chosen_ins < len(strengths) else strengths[-1]
-
-        # 如果没选最好的位置，扣分
-        return (actual_s + 1e-8) / (max_s + 1e-8) 
 
     def _run_opponents(self, verbose=False):
         safe = 0
