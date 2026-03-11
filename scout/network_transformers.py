@@ -5,64 +5,75 @@ from gymnasium import spaces
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from stable_baselines3.common.policies import MultiInputActorCriticPolicy
 from sb3_contrib.common.maskable.policies import MaskableActorCriticPolicy
-
 import torch as th
 import torch.nn as nn
+import numpy as np
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
-class ResidualBlock1D(nn.Module):
-    # (保持你原来的代码不变)
-    def __init__(self, channels):
-        super().__init__()
-        self.conv = nn.Sequential(
-            nn.Conv1d(channels, channels, kernel_size=3, padding=1),
-            nn.BatchNorm1d(channels),
-            nn.ReLU(),
-            nn.Conv1d(channels, channels, kernel_size=3, padding=1),
-            nn.BatchNorm1d(channels)
-        )
-        self.relu = nn.ReLU()
-
-    def forward(self, x):
-        identity = x
-        out = self.conv(x)
-        out += identity
-        return self.relu(out)
-
-class ScoutFullFeatureExtractor(BaseFeaturesExtractor):
-    def __init__(self, observation_space, features_dim=256):
+class ScoutTransformerExtractor(BaseFeaturesExtractor):
+    def __init__(self, observation_space, d_model=128, nhead=4, num_layers=3, features_dim=256):
         super().__init__(observation_space, features_dim)
         
-        # 动态获取输入的通道数 (因为后续我们增加了历史特征，通道数会变)
-        in_channels = observation_space.shape[0]
+        # 输入维度: (Batch, Channels, 16)
+        self.in_channels = observation_space.shape[0]
+        self.seq_len = 16
+        self.d_model = d_model
 
-        self.cnn = nn.Sequential(
-            nn.Conv1d(in_channels, 64, kernel_size=3, padding=1),
-            nn.BatchNorm1d(64),
-            nn.ReLU(),
-            ResidualBlock1D(64),
-            ResidualBlock1D(64),
-            
-            # 【核心修改】：stride 改为 1，保持序列宽度为 16
-            nn.Conv1d(64, 128, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm1d(128),
-            nn.ReLU(),
-            ResidualBlock1D(128),
-            ResidualBlock1D(128),
-            nn.Flatten() 
-        )
+        # 1. 输入投影层：将每张牌的 90+ 维特征转为 Transformer 的向量
+        self.input_projection = nn.Linear(self.in_channels, d_model)
         
-        # 【核心修改】：128通道 * 16宽度 = 2048
+        # 2. 位置编码：因为 Scout 位置固定，我们使用可学习的位置编码
+        self.pos_embedding = nn.Parameter(th.randn(1, self.seq_len, d_model))
+        
+        # 3. Transformer Encoder 层
+        # batch_first=True 方便处理 (Batch, Seq, Dim) 数据
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model, 
+            nhead=nhead, 
+            dim_feedforward=d_model * 4,
+            dropout=0.1,
+            activation='gelu',
+            batch_first=True
+        )
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        
+        # 4. 最终输出层
         self.output_layer = nn.Sequential(
-            nn.Linear(2048, features_dim),
+            nn.Linear(d_model, features_dim),
+            nn.LayerNorm(features_dim),
             nn.ReLU()
         )
 
     def forward(self, observations):
-        return self.output_layer(self.cnn(observations))
-# ==========================================
-# 3. AlphaDou 策略网络 (Custom Policy)
-# 实现论文中的胜率 (WinRate) 与 期望 (Expectation) 的分离预测
+        # observations 形状: (Batch, Channels, 16)
+        
+        # 步骤 A: 准备 Padding Mask
+        # 假设第一行特征 (h_mat[0]) 在没有牌的位置是 0
+        # src_key_padding_mask 要求: 有牌的地方为 False, 补零的地方为 True
+        # 我们取所有通道的和，如果全为 0，说明这一列是空位
+        padding_mask = (observations.sum(dim=1) == 0) # (Batch, 16)
+        
+        # 步骤 B: 维度转换 (Batch, Channels, 16) -> (Batch, 16, Channels)
+        x = observations.transpose(1, 2) 
+        
+        # 步骤 C: 投影到 d_model 维度并加上位置编码
+        x = self.input_projection(x) # (Batch, 16, d_model)
+        x = x + self.pos_embedding
+        
+        # 步骤 D: 进入 Transformer 编码
+        # 传入 padding_mask，让 Self-Attention 忽略掉没有牌的列
+        encoded = self.transformer_encoder(x, src_key_padding_mask=padding_mask) # (Batch, 16, d_model)
+        
+        # 步骤 E: 聚合全局信息
+        # 我们不直接 Flatten，而是使用 Masked Global Average Pooling
+        # 只对非 Padding 的位置取平均
+        mask_expanded = (~padding_mask).unsqueeze(-1).float() # (Batch, 16, 1)
+        sum_features = (encoded * mask_expanded).sum(dim=1)
+        count = mask_expanded.sum(dim=1).clamp(min=1)
+        global_features = sum_features / count # (Batch, d_model)
+        
+        return self.output_layer(global_features)
+
 # ==========================================
 class AlphaDouMlpExtractor(nn.Module):
     def __init__(self, features_dim: int):
@@ -117,7 +128,7 @@ if __name__ == "__main__":
 
     # 定义策略参数
     policy_kwargs = dict(
-        features_extractor_class=ScoutAlphaDouExtractor,
+        features_extractor_class=AlphaDouMlpExtractor,
         features_extractor_kwargs=dict(features_dim=1024),
         net_arch=dict(pi=[512, 256], vf=[512, 256]) # 这里的 pi 和 vf 会接在 extractor 之后
     )

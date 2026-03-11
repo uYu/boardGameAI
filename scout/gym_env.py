@@ -17,7 +17,7 @@ class ScoutEnv(gym.Env):
         self.observation_space = spaces.Box(
             low=0, 
             high=1, 
-            shape=(63, 16), # 63层特征，宽度16
+            shape=(93, 16), # 63层特征，宽度16
             dtype=np.float32
         )
 
@@ -78,15 +78,48 @@ class ScoutEnv(gym.Env):
             ]
             opp_mat[idx*4 : (idx+1)*4, :] = np.tile(np.array(opp_info).reshape(4, 1), (1, W))
 
-        # --- 7. 历史动作 (6行: 前三轮动作编码) ---
-        # 简化：每手2行(动作类型 0/1, 强度)，共6行
-        hist_mat = np.tile(self.game.get_action_history_vec().reshape(6, 1), (1, W))
+        # --- 7. 优化后的历史动作矩阵 (共 36 行) ---
+        # 记录前 3 步动作，每步占用 12 行
+        num_history_steps = 3
+        history_rows_per_step = 12
+        hist_mat = np.zeros((num_history_steps * history_rows_per_step, W), dtype=np.float32)
 
-        # --- 最终拼接 (63行) ---
+        # 这里假设你在 ScoutGame 类中新增了一个方法 get_recent_actions(n=3)
+        # 它返回一个列表，例如: 
+        # [{'player': 1, 'type': 'show', 'cards': [4, 5, 5]}, 
+        #  {'player': 2, 'type': 'scout', 'pos': 'left', 'card_taken': 3}, ...]
+        recent_actions = self.game.get_recent_actions(n=num_history_steps)
+
+        for step_idx, act_info in enumerate(recent_actions):
+            base_row = step_idx * history_rows_per_step
+            
+            # 1. 记录是哪个玩家执行的动作 (相对当前玩家 p 的位置，归一化并平铺)
+            rel_p = (act_info['player'] - p) % 4
+            hist_mat[base_row + 0, :] = rel_p / 3.0  
+            
+            # 2. 如果是 Show 动作，将打出的牌型绘制在 10 行的矩阵里
+            if act_info['type'] == 'show':
+                for i, v in enumerate(act_info['cards'][:W]):
+                    # v 的范围是 1-10，减 1 映射到索引 0-9
+                    row_idx = base_row + 1 + (v - 1)
+                    hist_mat[row_idx, i] = 1.0
+                    
+            # 3. 如果是 Scout 动作，记录是从哪边抽的 (左: 0.5, 右: 1.0)
+            elif act_info['type'] == 'scout':
+                scout_val = 0.5 if act_info['pos'] == 'left' else 1.0
+                hist_mat[base_row + 11, :] = scout_val
+
+        # --- 最终拼接 ---
+        # 注意：因为去掉了之前的 6 行 hist_mat，加入了新的 36 行
+        # 你的总行数现在应该是 57 (基础) + 36 = 93 行
         obs = np.vstack([
             h_mat, t_mat, h_back_mat, conn_mat, spent_mat, safe_row, opp_mat, hist_mat
         ])
+        hand_len = len(self.game._get_active_hand(p))
+        if hand_len < 16:
+            obs[:, hand_len:] = 0.0
         return obs.astype(np.float32)
+
 
     def reset(self, seed=None, options=None):
         self.game.reset()
@@ -94,25 +127,54 @@ class ScoutEnv(gym.Env):
         return self._get_obs(0), {"action_mask": self._gen_mask()}
 
     def _gen_mask(self):
-        mask = np.zeros(380, dtype=np.int8)
-        for a in self.game.get_legal_actions(0): mask[a] = 1
+        # 初始化
+        mask = np.zeros(self.action_space.n, dtype=bool)
+        
+        # 【新增的终局保护】如果游戏已经结束，无需打印报警，直接开放 PASS 动作占位即可
+        if self.game.done:
+            mask[self.game.ACTION_PASS] = True
+            return mask
+            
+        # 动态获取当前玩家
+        curr_p = self.game.current_player
+        legal_actions = self.game.get_legal_actions(curr_p)
+        
+        # 填充合法动作
+        if legal_actions:
+            for a in legal_actions:
+                mask[a] = True
+                
+        # 【核心修复】万一 legal_actions 为空，或者全被屏蔽了 (只有游戏进行中才需报警)
+        if not np.any(mask):
+            # 强制开启 PASS 动作，确保概率分布不为零
+            mask[self.game.ACTION_PASS] = True
+            
+            # 记录罕见 Case 到日志，方便后续分析
+            print(f"!!! [WARNING] All-False mask detected for Player {curr_p}!")
+            print(f"Hand: {self.game.hands[curr_p]}, Table: {self.game.table_cards}")
+            print(f"Table Owner: {self.game.table_owner}, Current Player: {curr_p}")
+            print ("--------------------------------")
+            
         return mask
 
     def step(self, action, verbose=False):
         mask = self._gen_mask()
+        p = self.game.current_player
         # 记录行动前的状态
-        old_hand_len = len(self.game._get_active_hand(0))
-        
+        old_potential = self.game.calculate_hand_potential(p)
+
         if mask[action] == 0:
             return self._get_obs(0), -1.0, True, False, {"action_mask": mask}
 
         # 执行动作
-        self.game.step(action)        
+        self.game.step(action) 
         
         # 1. 基础引导奖励：鼓励出牌（每出一张牌给 0.1，Scout 拿牌则会是 -0.1）
-        new_hand_len = len(self.game._get_active_hand(0))
-        reward = (old_hand_len - new_hand_len) * 0.1
-
+        reward =  0. #(old_hand_len - new_hand_len) * 0.1
+        new_potential = self.game.calculate_hand_potential(p)
+        # 结构被优化（如连成了更长的顺子）给小奖，被拆散给惩罚
+        potential_diff = (new_potential - old_potential) * 0.05 
+        reward += potential_diff
         # 2. 运行对手回合 (Self-play 或 随机)
         if not self.game.done:
             self._run_opponents(verbose=verbose)

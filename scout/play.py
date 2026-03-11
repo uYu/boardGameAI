@@ -35,7 +35,7 @@ def get_action_name(game, action_idx, current_hand, table_cards):
 def verify():
     # 1. 加载环境和模型
     env = ScoutEnv()
-    model = MaskablePPO.load("/data/feiyu/code/scout/models/best_diff_model_440000.zip")
+    model = MaskablePPO.load("/data/feiyu/code/boardGameAI/scout/models/best_diff_model_170000.zip")
     
     obs, info = env.reset()
     game = env.unwrapped.game
@@ -68,7 +68,8 @@ def verify():
             # 生成模型预测 (省略部分重复的推理代码...)
             action_masks = env.unwrapped._gen_mask()
             with th.no_grad():
-                obs_tensor = {k: th.as_tensor(v).unsqueeze(0).to(model.device) for k, v in obs.items()}
+                # obs_tensor = {k: th.as_tensor(v).unsqueeze(0).to(model.device) for k, v in obs.items()}
+                obs_tensor = th.as_tensor(obs).unsqueeze(0).to(model.device) 
                 dist = model.policy.get_distribution(obs_tensor)
                 probs = dist.distribution.probs.cpu().numpy()[0]
                 masked_probs = (probs * action_masks) / ( (probs * action_masks).sum() + 1e-8)

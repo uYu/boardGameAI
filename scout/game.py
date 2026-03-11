@@ -100,21 +100,36 @@ class ScoutGame:
         return 0, 1
 
     def _encode_scout(self, side, insert_idx, flip):
-        stride = (self.max_hand_size + 1) * 2 
-        return side * stride + insert_idx * 2 + flip
+        # side: 0, 1 | flip: 0, 1 | insert_idx: 0 to 16
+        # 确保 insert_idx 不会超过 16 (max_hand_size)
+        safe_ins = min(insert_idx, self.max_hand_size)
+        # 每一个 side 占据 (max_hand_size + 1) * 2 个坑位
+        per_side = (self.max_hand_size + 1) * 2
+        return side * per_side + safe_ins * 2 + flip
 
     def _decode_scout(self, code):
-        stride = (self.max_hand_size + 1) * 2
-        side = code // stride
-        rem = code % stride
-        return side, rem // 2, rem % 2
-        
+        per_side = (self.max_hand_size + 1) * 2
+        side = code // per_side
+        rem = code % per_side
+        insert_idx = rem // 2
+        flip = rem % 2
+        return side, insert_idx, flip
+
+    def get_recent_actions(self, n=3):
+        """返回最近 n 步的动作列表，如果不足 n 步则用空动作填充"""
+        hist = list(self.action_history)
+        # 如果历史不够长，往前填充空的动作字典
+        while len(hist) < n:
+            hist.insert(0, {'player': -1, 'type': 'none', 'cards': [], 'pos': None})
+        # 返回最近的 n 个
+        return hist[-n:]
+
     def step(self, action):
         action_type = 0.5 if action >= self.OFFSET_SCOUT else 1.0
         # 强度简单定义：牌的数量
         power = len(self.table_cards) if action_type == 1.0 else 1
-        self.action_history.append({'type': action_type, 'power': power})
         p = self.current_player
+        self.action_history.append({'type': action_type, 'power': power, 'player': p})
 
         if action == self.ACTION_PASS:
             self.phase = "PLAY"
@@ -146,72 +161,70 @@ class ScoutGame:
         self._check_end_condition()
 
     def _perform_scout(self, player, side, insert_idx, flip):
-        """执行侦察：拿牌，给桌主分"""
         if not self.table_cards: return
 
-        # 1. 给桌主加 1 VP (筹码分)
-        if self.table_owner != -1:
+        # 1. 结算 VP：给当前桌面的主人加分
+        if self.table_owner != -1 and self.table_owner != player:
             self.vp_tokens[self.table_owner] += 1
+            self.scores[self.table_owner] += 1 # 同步更新特征矩阵用的分数
         
-        # 2. 移除牌并加入手牌
+        # 2. 拿牌逻辑
         card_tuple = self.table_cards.pop(0 if side == 0 else -1)
-        
-        # --- 关键修复：不要在这里把 table_owner 设为 -1 ---
-        # 即使 table_cards 空了，也要保留 table_owner，
-        # 直到接下来的 SHOW 动作执行时，判定谁该拿走这些牌（或判定没人拿）。
         
         hand = self.hands[player]
         if flip: card_tuple = (card_tuple[1], card_tuple[0])
+        
         is_flipped = self.setup_choices.get(player, 0)
         if is_flipped:
-            hand.insert(len(hand) - insert_idx, (card_tuple[1], card_tuple[0]))
+            # 物理存储映射：翻转状态下，insert_idx 0 是列表末尾
+            actual_pos = len(hand) - insert_idx
+            hand.insert(actual_pos, (card_tuple[1], card_tuple[0]))
         else:
             hand.insert(insert_idx, card_tuple)
+
+        # 【核心修复】：只有桌子空了才重置主人。如果还有剩余牌，主人不变。
         if len(self.table_cards) == 0:
-            self.table_owner = -1  # 桌面空了，不再属于任何人
+            self.table_owner = -1
+
 
     def get_legal_actions(self, player):
         if self.done: return []
         actions = []
         hand_vals = self._get_active_hand(player)
         n = len(hand_vals)
-
         table_vals = [c[0] for c in self.table_cards]
         table_combo = self._evaluate_combo(table_vals)
 
-        # 情况 A: 处于 SCOUT & SHOW 的后续出牌阶段
-        if self.phase == "WAITING_FOR_SHOW":
-            for length in range(1, n + 1):
-                for start in range(n - length + 1):
-                    combo = self._evaluate_combo(hand_vals[start:start+length])
-                    if combo and self._beats(combo, table_combo):
-                        actions.append(self.OFFSET_SHOW + self._encode_show(start, length))
-            if not actions: actions.append(self.ACTION_PASS)
-            return actions
-
-        # 情况 B: 正常 PLAY 阶段
-        # 1. SHOW 动作
+        # A. SHOW 逻辑 (0-135)
         for length in range(1, n + 1):
             for start in range(n - length + 1):
                 combo = self._evaluate_combo(hand_vals[start:start+length])
                 if combo and self._beats(combo, table_combo):
                     actions.append(self.OFFSET_SHOW + self._encode_show(start, length))
 
-        # 2. SCOUT 动作 (桌面有牌且不是自己的)
-        # 【修复】：必须限制 n < self.max_hand_size，否则动作编码会越界碰撞！
+        # B. SCOUT 逻辑
         if self.table_cards and self.table_owner != player and n < self.max_hand_size:
             sides = [0, 1] if len(self.table_cards) > 1 else [0]
             for side in sides:
-                for ins in range(n + 1):
+                for ins in range(n + 1): # 新牌可以插在 n+1 个位置
                     for flip in [0, 1]:
                         code = self._encode_scout(side, ins, flip)
-                        actions.append(self.OFFSET_SCOUT + code)
+                        
+                        # 纯 SCOUT (OFFSET_SCOUT 之后)
+                        scout_act = self.OFFSET_SCOUT + code
+                        if scout_act < self.OFFSET_SCOUT_SHOW:
+                            actions.append(scout_act)
+                        
+                        # SCOUT & SHOW (OFFSET_SCOUT_SHOW 之后)
                         if self.scout_show_tokens[player]:
-                            actions.append(self.OFFSET_SCOUT_SHOW + code)
+                            sc_show_act = self.OFFSET_SCOUT_SHOW + code
+                            if sc_show_act < self.ACTION_PASS:
+                                actions.append(sc_show_act)
+
+        # C. 兜底逻辑：如果什么都做不了，或者发生了编码溢出
         if not actions:
-            # 这种情况下，在 Scout 规则里通常意味着游戏应该结束
-            # 或者我们强制给一个 PASS 动作让游戏轮转下去
-            actions.append(self.ACTION_PASS) 
+            actions.append(self.ACTION_PASS)
+            
         return actions
 
     def _perform_show(self, player, start, length):
@@ -246,14 +259,14 @@ class ScoutGame:
         self.table_owner = player
 
     def _check_end_condition(self):
-        # 1. 有人打光手牌
+        # 1. 有人打光手牌 -> 结束
         for i in range(self.num_players):
             if len(self.hands[i]) == 0:
                 self.done = True
                 self._calculate_scores()
                 return
         
-        # 2. 轮到某人时，桌上仍是他出的牌（说明没人能压过他）
+        # 2. 轮到你时，桌上的牌还是你出的 -> 没人压得过，你赢了 -> 结束
         next_p = self.current_player
         if self.phase == "PLAY" and self.table_cards and self.table_owner == next_p:
             self.done = True
@@ -297,3 +310,45 @@ class ScoutGame:
             "round_scores": self.round_scores,
             "phase": self.phase
         }
+        
+    def calculate_hand_potential(self, player):
+        """
+        计算手牌结构的“潜力值”。
+        逻辑：识别手牌中所有的 Set(同数) 和 Sequence(顺子)，
+        价值 = sum(组合长度的平方)。
+        这会引导 AI 倾向于保留长组合，而不是拆散它们。
+        """
+        hand = self._get_active_hand(player)
+        if not hand: return 0
+        
+        potential = 0
+        i = 0
+        while i < len(hand):
+            # 1. 尝试寻找从 i 开始的最长 Set
+            set_len = 1
+            for j in range(i + 1, len(hand)):
+                if hand[j] == hand[i]: set_len += 1
+                else: break
+            
+            # 2. 尝试寻找从 i 开始的最长 Sequence (升序或降序)
+            seq_len_asc = 1
+            for j in range(i + 1, len(hand)):
+                if hand[j] == hand[j-1] + 1: seq_len_asc += 1
+                else: break
+            
+            seq_len_desc = 1
+            for j in range(i + 1, len(hand)):
+                if hand[j] == hand[j-1] - 1: seq_len_desc += 1
+                else: break
+                
+            best_local_len = max(set_len, seq_len_asc, seq_len_desc)
+            
+            # 评分公式：长度的平方（鼓励更长的组合）
+            # 例如：[5,5,5] = 9分, 而 [5,2,5,5] = 1+4=5分
+            if best_local_len > 1:
+                potential += (best_local_len ** 2)
+                i += best_local_len
+            else:
+                potential += 1 # 单张牌 1 分
+                i += 1
+        return potential
