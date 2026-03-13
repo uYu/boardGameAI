@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Scout! 沉浸式四人桌</title>
+    <style>
+        :root {
+            --bg: #1B2631; --felt: #212F3D; --accent: #F1C40F;
+            --card-bg: #FDFEFE; --card-back: #34495E;
+            --scout: #2ECC71; --show: #E74C3C;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--bg); color: white;
+            margin: 0; padding: 0; display: flex; flex-direction: column;
+            align-items: center; height: 100vh; overflow: hidden;
+        }
+        
+        /* 当前行动玩家的高亮特效 */
+        .active-turn .player-tag {
+            background: #E67E22;
+            color: white;
+            box-shadow: 0 0 15px rgba(230, 126, 34, 0.8);
+            transform: scale(1.1);
+            transition: all 0.3s ease;
+            border: 2px solid #F39C12;
+        }
+        .active-turn .card-back {
+            border-color: #E67E22;
+            box-shadow: 0 0 10px rgba(230, 126, 34, 0.4);
+        }
+            /* 十字形牌桌布局 */
+        .game-table {
+            display: grid;
+            grid-template-areas:
+                ". top ."
+                "left center right"
+                ". bottom .";
+            grid-template-columns: 120px 1fr 120px;
+            grid-template-rows: 150px 1fr 200px;
+            width: 100%; max-width: 1000px; height: 100%;
+            padding: 10px; box-sizing: border-box; gap: 10px;
+        }
+
+        .player-area {
+            display: flex; justify-content: center; align-items: center;
+            position: relative;
+        }
+        
+        .area-top { grid-area: top; align-items: flex-start; padding-top: 20px;}
+        .area-left { grid-area: left; flex-direction: column; }
+        .area-right { grid-area: right; flex-direction: column; }
+        .area-bottom { grid-area: bottom; flex-direction: column; justify-content: flex-end; padding-bottom: 20px;}
+        .area-center { 
+            grid-area: center; background: var(--felt); border-radius: 20px;
+            box-shadow: inset 0 0 30px rgba(0,0,0,0.5);
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+        }
+
+        .player-tag {
+            position: absolute; background: rgba(0,0,0,0.6); padding: 4px 8px;
+            border-radius: 4px; font-size: 12px; color: #BDC3C7; z-index: 10;
+        }
+        .area-top .player-tag { top: 0; }
+        .area-left .player-tag { top: 10px; left: 10px; }
+        .area-right .player-tag { top: 10px; right: 10px; }
+        .area-bottom .player-tag { bottom: -10px; }
+
+        /* 卡牌通用样式 */
+        .card {
+            display: inline-flex; flex-direction: column;
+            width: 55px; height: 80px; background: var(--card-bg);
+            color: #2C3E50; border-radius: 6px; box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+            cursor: pointer; transition: 0.2s; overflow: hidden; user-select: none;
+            border: 2px solid transparent; flex-shrink: 0;
+        }
+        .card .main-val { flex: 1.5; display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: bold; }
+        .card .sub-val { flex: 1; display: flex; align-items: center; justify-content: center; font-size: 13px; background: #ECF0F1; color: #95A5A6; border-top: 1px solid #D5D8DC; }
+        
+        /* 手牌与桌面牌特效 */
+        .my-hand-container { display: flex; align-items: flex-start; justify-content: center; height: 100px; }
+        .my-hand-container .card.selected { border-color: var(--accent); transform: translateY(-15px); box-shadow: 0 10px 20px rgba(241,196,15,0.4); }
+        
+        .table-cards-container { display: flex; gap: 4px; }
+        .table-card { cursor: default; }
+        .table-card.scoutable:hover { transform: translateY(-10px); box-shadow: 0 10px 15px rgba(46,204,113,0.4); border-color: var(--scout); cursor: grab;}
+
+        /* NPC 牌背堆叠效果 */
+        .card-back { background: var(--card-back); border: 2px solid #2C3E50; background-image: repeating-linear-gradient(45deg, transparent, transparent 5px, rgba(255,255,255,0.1) 5px, rgba(255,255,255,0.1) 10px); }
+        .npc-hand-h { display: flex; gap: -30px; } /* 横向重叠 */
+        .npc-hand-h .card-back { margin-left: -35px; }
+        .npc-hand-h .card-back:first-child { margin-left: 0; }
+        
+        .npc-hand-v { display: flex; flex-direction: column; } /* 纵向重叠 */
+        .npc-hand-v .card-back { margin-top: -60px; transform: rotate(90deg); }
+        .npc-hand-v .card-back:first-child { margin-top: 0; }
+
+        /* 插入点 */
+        .insert-point { width: 14px; height: 80px; margin: 0 -7px; z-index: 5; cursor: pointer; transition: 0.2s; border-radius: 4px; }
+        .insert-point.scouting { background: rgba(46,204,113,0.15); }
+        .insert-point.scouting:hover, .insert-point.active { background: var(--scout); box-shadow: 0 0 12px var(--scout); }
+
+        /* SCOUT 中转区 & 操作条 */
+        #action-bar {
+            position: absolute; bottom: 120px; left: 50%; transform: translateX(-50%);
+            background: rgba(44, 62, 80, 0.95); padding: 10px 25px; border-radius: 30px;
+            display: none; align-items: center; gap: 15px; box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            z-index: 100; border: 1px solid #34495E; white-space: nowrap;
+        }
+        .draft-card-wrapper { animation: popIn 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
+        .draft-card-wrapper .card { border-color: var(--scout); box-shadow: 0 0 20px rgba(46,204,113,0.6); }
+        @keyframes popIn { 0% { transform: scale(0.5); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
+
+        button { padding: 8px 16px; border: none; border-radius: 20px; font-weight: bold; cursor: pointer; transition: 0.2s; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-show { background: var(--show); color: white; }
+        .btn-confirm { background: var(--scout); color: white; }
+        .btn-cancel { background: #7F8C8D; color: white; }
+        
+        /* 状态播报 */
+        #game-status {
+            position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+            background: rgba(0,0,0,0.7); padding: 5px 15px; border-radius: 15px; font-size: 14px;
+        }
+
+        #setup-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.9); display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 1000; }
+    </style>
+</head>
+<body>
+
+<div id="setup-overlay" style="display:none;">
+    <h2>Scout! 选择初始手牌方向</h2>
+    <div style="display:flex; gap:10px; margin-top:20px;">
+        <button onclick="sendSetup(0)" style="background:#27ae60; color:white; padding:15px 30px;">保持当前</button>
+        <button onclick="sendSetup(1)" style="background:#8e44ad; color:white; padding:15px 30px;">整体翻转</button>
+    </div>
+</div>
+
+<div id="game-status">连接中...</div>
+
+<div id="action-bar"></div>
+
+<div class="game-table">
+    <div class="player-area area-top">
+        <div class="player-tag">NPC 2</div>
+        <div class="npc-hand-h" id="npc2-hand"></div>
+    </div>
+
+    <div class="player-area area-left">
+        <div class="player-tag">NPC 1</div>
+        <div class="npc-hand-v" id="npc1-hand"></div>
+    </div>
+
+    <div class="player-area area-center">
+        <div style="color: #95A5A6; font-size: 12px; margin-bottom: 10px;" id="table-info">桌面牌</div>
+        <div class="table-cards-container" id="table-cards"></div>
+        <button id="btn-ai" onclick="aiTurn()" style="margin-top: 20px; background: #F39C12; color: white;">NPC 行动</button>
+    </div>
+
+    <div class="player-area area-right">
+        <div class="player-tag">NPC 3</div>
+        <div class="npc-hand-v" id="npc3-hand"></div>
+    </div>
+
+    <div class="player-area area-bottom">
+        <div class="player-tag" style="top:-25px; bottom:auto;">你 (P0)</div>
+        <div class="my-hand-container" id="my-hand"></div>
+    </div>
+</div>
+
+<script>
+let state = null;
+    let selectedUIIndices = [];
+    let isAiThinking = false; // 防止重复触发
+    
+    // SCOUT 状态
+    let scoutDraft = { active: false, card: null, side: null, flipped: false, uiInsertIdx: -1 };
+
+    function getCardValues(card) {
+        return Array.isArray(card) ? card : [card, '?'];
+    }
+
+    async function refresh() {
+        try {
+            const res = await fetch('/api/state');
+            state = await res.json();
+            document.getElementById('setup-overlay').style.display = state.is_setup_phase ? 'flex' : 'none';
+            render();
+
+            // 核心改动：如果是 NPC 的回合，自动延迟并执行
+            if (state.current_player !== 0 && !state.is_setup_phase && !state.done) {
+                scheduleAiTurn();
+            }
+        } catch (e) { console.error("状态获取失败", e); }
+    }
+
+    function scheduleAiTurn() {
+        if (isAiThinking) return;
+        isAiThinking = true;
+        
+        // 故意延迟 1.5 秒，制造“思考”和过程感
+        setTimeout(async () => {
+            await fetch('/api/ai_step', {method: 'POST'});
+            isAiThinking = false;
+            refresh(); // 刷新后，如果还是 NPC，会继续触发 scheduleAiTurn
+        }, 1500); 
+    }
+
+    function renderNpcHand(elementId, count) {
+        const el = document.getElementById(elementId);
+        el.innerHTML = '';
+        for(let i=0; i<count; i++) {
+            el.innerHTML += `<div class="card card-back"></div>`;
+        }
+    }
+
+    function render() {
+        if (!state) return;
+        const isMyTurn = state.current_player === 0 && !state.is_setup_phase;
+
+        // 重置所有玩家的高亮状态
+        document.querySelectorAll('.player-area').forEach(el => el.classList.remove('active-turn'));
+
+        // 给当前行动的玩家加上高亮
+        if (state.current_player === 0) document.querySelector('.area-bottom').classList.add('active-turn');
+        if (state.current_player === 1) document.querySelector('.area-left').classList.add('active-turn');
+        if (state.current_player === 2) document.querySelector('.area-top').classList.add('active-turn');
+        if (state.current_player === 3) document.querySelector('.area-right').classList.add('active-turn');
+
+        // 1. 渲染 NPC 牌数
+        renderNpcHand('npc1-hand', state.npc_card_counts['1'] || 0);
+        renderNpcHand('npc2-hand', state.npc_card_counts['2'] || 0);
+        renderNpcHand('npc3-hand', state.npc_card_counts['3'] || 0);
+
+        // 2. 渲染桌面牌
+        const tableDiv = document.getElementById('table-cards');
+        tableDiv.innerHTML = '';
+        const tCards = state.table_cards || [];
+        
+        if (tCards.length === 0) {
+            tableDiv.innerHTML = '<span style="color:#7F8C8D; font-size:14px;">(空)</span>';
+        } else {
+            tCards.forEach((c, idx) => {
+                const [v1, v2] = getCardValues(c);
+                const isEdge = (idx === 0 || idx === tCards.length - 1);
+                const canScout = isMyTurn && !scoutDraft.active && isEdge;
+                
+                const cardEl = document.createElement('div');
+                cardEl.className = `card table-card ${canScout ? 'scoutable' : ''}`;
+                cardEl.innerHTML = `<div class="main-val">${v1}</div><div class="sub-val">${v2}</div>`;
+                
+                if (canScout) {
+                    cardEl.onclick = () => startScout(idx === 0 ? 0 : 1, c);
+                }
+                tableDiv.appendChild(cardEl);
+            });
+        }
+        
+        const ownerName = state.table_owner === -1 ? '无' : (state.table_owner === 0 ? '你' : `NPC ${state.table_owner}`);
+        document.getElementById('table-info').innerText = tCards.length > 0 ? `由 ${ownerName} 打出` : '新的一轮';
+
+        // 3. 渲染我的手牌
+        const handDiv = document.getElementById('my-hand');
+        handDiv.innerHTML = '';
+        let displayHand = [...state.human_hand_raw];
+        if (state.setup_choice === 1) displayHand.reverse();
+
+        displayHand.forEach((card, i) => {
+            const ip = document.createElement('div');
+            ip.className = `insert-point ${scoutDraft.active ? 'scouting' : ''} ${scoutDraft.uiInsertIdx === i ? 'active' : ''}`;
+            ip.onclick = () => scoutDraft.active && selectInsertPos(i);
+            handDiv.appendChild(ip);
+
+            const [v1, v2] = getCardValues(card);
+            const topVal = state.setup_choice === 1 ? v2 : v1;
+            const botVal = state.setup_choice === 1 ? v1 : v2;
+
+            const cardEl = document.createElement('div');
+            cardEl.className = `card ${selectedUIIndices.includes(i) ? 'selected' : ''}`;
+            cardEl.innerHTML = `<div class="main-val">${topVal}</div><div class="sub-val">${botVal}</div>`;
+            cardEl.onclick = () => {
+                if (!isMyTurn || scoutDraft.active) return;
+                const pos = selectedUIIndices.indexOf(i);
+                if (pos > -1) selectedUIIndices.splice(pos, 1);
+                else selectedUIIndices.push(i);
+                selectedUIIndices.sort((a,b) => a-b);
+                render();
+            };
+            handDiv.appendChild(cardEl);
+        });
+
+        const lastIp = document.createElement('div');
+        lastIp.className = `insert-point ${scoutDraft.active ? 'scouting' : ''} ${scoutDraft.uiInsertIdx === displayHand.length ? 'active' : ''}`;
+        lastIp.onclick = () => scoutDraft.active && selectInsertPos(displayHand.length);
+        handDiv.appendChild(lastIp);
+
+        // 4. 动态操作条逻辑
+        const actionBar = document.getElementById('action-bar');
+        if (scoutDraft.active) {
+            actionBar.style.display = 'flex';
+            const [v1, v2] = getCardValues(scoutDraft.card);
+            const topV = scoutDraft.flipped ? v2 : v1;
+            const botV = scoutDraft.flipped ? v1 : v2;
+            
+            actionBar.innerHTML = `
+                <div class="draft-card-wrapper" onclick="toggleDraftFlip()">
+                    <div class="card" style="width:45px; height:65px; cursor:pointer;" title="点击翻转">
+                        <div class="main-val" style="font-size:16px;">${topV}</div>
+                        <div class="sub-val" style="font-size:10px;">${botV}</div>
+                    </div>
+                </div>
+                <span style="font-size:13px; color:#BDC3C7;">已拿起 (点击可翻面)，请点选手牌缝隙插入</span>
+                <button class="btn-confirm" onclick="confirmScout()" ${scoutDraft.uiInsertIdx === -1 ? 'disabled' : ''}>确定</button>
+                <button class="btn-cancel" onclick="cancelScout()">取消</button>
+            `;
+        } else if (selectedUIIndices.length > 0) {
+            actionBar.style.display = 'flex';
+            actionBar.innerHTML = `<button class="btn-show" onclick="handleShow()">打出这 ${selectedUIIndices.length} 张牌</button>`;
+        } else {
+            actionBar.style.display = 'none';
+        }
+
+        // 5. 状态文字 (移除了原来的 NPC 行动按钮，用这个代替)
+        if (state.done) {
+            document.getElementById('game-status').innerText = "🏆 游戏结束！";
+        } else {
+            document.getElementById('game-status').innerText = isMyTurn ? 
+                "🚨 你的回合，请点击桌面边缘拿牌或选取手牌打出" : 
+                `NPC ${state.current_player} 思考中...`;
+        }
+    }
+
+    // --- 动作逻辑 ---
+    function startScout(side, cardData) {
+        scoutDraft.active = true; scoutDraft.side = side; scoutDraft.card = cardData;
+        scoutDraft.flipped = false; scoutDraft.uiInsertIdx = -1; selectedUIIndices = []; render();
+    }
+    function toggleDraftFlip() { scoutDraft.flipped = !scoutDraft.flipped; render(); }
+    function selectInsertPos(idx) { scoutDraft.uiInsertIdx = idx; render(); }
+    function cancelScout() { scoutDraft.active = false; render(); }
+
+    async function confirmScout() {
+        let pInsert = scoutDraft.uiInsertIdx;
+        if (state.setup_choice === 1) pInsert = state.human_hand_raw.length - scoutDraft.uiInsertIdx;
+        await fetch('/api/human_action', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ type: 'SCOUT', side: scoutDraft.side, insert_idx: pInsert, flip: scoutDraft.flipped ? 1 : 0 })
+        });
+        scoutDraft.active = false; refresh();
+    }
+
+    async function handleShow() {
+        if (selectedUIIndices.length === 0) return;
+        for(let i=0; i<selectedUIIndices.length-1; i++) {
+            if (selectedUIIndices[i+1] - selectedUIIndices[i] !== 1) return alert("打出的牌必须相邻");
+        }
+        let pIndices = selectedUIIndices.map(i => (state.setup_choice === 1) ? (state.human_hand_raw.length - 1 - i) : i);
+        pIndices.sort((a,b) => a-b);
+        await fetch('/api/human_action', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ type: 'SHOW', start: pIndices[0], length: pIndices.length })
+        });
+        selectedUIIndices = []; refresh();
+    }
+
+    async function sendSetup(side) {
+        await fetch('/api/choose_side', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({side: side}) });
+        refresh();
+    }
+
+    refresh();
+</script>
+</body>
+</html>

@@ -36,7 +36,7 @@ def train():
     policy_kwargs = dict(
         features_extractor_class=ScoutTransformerExtractor,
         features_extractor_kwargs=dict(features_dim=1024),
-        net_arch=dict(pi=[512, 256], vf=[512, 256]) # 这里的 pi 和 vf 会接在 extractor 之后
+        net_arch=dict(pi=[512], vf=[512]) # 这里的 pi 和 vf 会接在 extractor 之后
     )
 
     callback = ScoutWinRateCallback(eval_env, eval_freq=10000, n_eval_episodes=100, verbose=1)
@@ -47,9 +47,9 @@ def train():
         policy_kwargs=policy_kwargs,
         verbose=1,
         n_steps=2048,
-        batch_size=1024,       # 卷积网络建议稍大的 batch
-        learning_rate=linear_schedule(1e-4),   # 降低学习率保证卷积层稳定
-        gamma=0.995,
+        batch_size=512,       # 卷积网络建议稍大的 batch
+        learning_rate=linear_schedule(2e-5),   # 降低学习率保证卷积层稳定
+        gamma=0.99,
         ent_coef=0.05,
         tensorboard_log="./scout_cnn_logs/"
     )

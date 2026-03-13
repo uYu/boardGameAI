@@ -35,7 +35,7 @@ def get_action_name(game, action_idx, current_hand, table_cards):
 def verify():
     # 1. 加载环境和模型
     env = ScoutEnv()
-    model = MaskablePPO.load("/data/feiyu/code/boardGameAI/scout/models/best_diff_model_170000.zip")
+    model = MaskablePPO.load("/data/feiyu/code/boardGameAI/scout/models/best_diff_model_4220000.zip")
     
     obs, info = env.reset()
     game = env.unwrapped.game

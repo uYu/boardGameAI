@@ -11,7 +11,7 @@ import numpy as np
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
 class ScoutTransformerExtractor(BaseFeaturesExtractor):
-    def __init__(self, observation_space, d_model=128, nhead=4, num_layers=3, features_dim=256):
+    def __init__(self, observation_space, d_model=512, nhead=4, num_layers=3, features_dim=512):
         super().__init__(observation_space, features_dim)
         
         # 输入维度: (Batch, Channels, 16)

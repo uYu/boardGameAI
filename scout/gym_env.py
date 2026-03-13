@@ -173,7 +173,7 @@ class ScoutEnv(gym.Env):
         reward =  0. #(old_hand_len - new_hand_len) * 0.1
         new_potential = self.game.calculate_hand_potential(p)
         # 结构被优化（如连成了更长的顺子）给小奖，被拆散给惩罚
-        potential_diff = (new_potential - old_potential) * 0.05 
+        potential_diff = (new_potential - old_potential) * 0.2
         reward += potential_diff
         # 2. 运行对手回合 (Self-play 或 随机)
         if not self.game.done:

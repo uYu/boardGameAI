@@ -6,7 +6,7 @@ from sb3_contrib import MaskablePPO
 import pandas as pd
 from scipy.stats import pearsonr
 
-def save_raw_samples(model_path, num_episodes=1000, output_file="/data/feiyu/code/scout/data/scout_raw_data.jsonl"):
+def save_raw_samples(model_path, num_episodes=5000, output_file="/data/feiyu/code/boardGameAI/scout/data/scout_raw_data.jsonl"):
     """
     导出原始手牌信息。
     格式: JSON Lines (每行一个 JSON 对象，方便大文件读取)
@@ -42,13 +42,15 @@ def save_raw_samples(model_path, num_episodes=1000, output_file="/data/feiyu/cod
             
             # 4. 封装并写入数据
             # 一局游戏产生一个 entry，包含 4 个玩家的独立视角
+            entries = []
             for i in range(4):
                 entry = {
                     "hand": [item[0] for item in initial_hands[i]],   # 原始手牌 [[7,1], [8,2], ...]
                     "score": int(final_scores[i]), # 最终得分
                     "player_id": i
                 }
-                f.write(json.dumps(entry) + "\n")
+                entries.append(entry)
+            f.write(json.dumps(entries) + "\n")
 
     print(f"\n采集完毕！原始数据已保存至: {output_file}")
 
@@ -151,6 +153,6 @@ def analyze_correlation(file_path):
 
 
 if __name__ == "__main__":
-    MODEL_PATH = "/data/feiyu/code/scout/logs/best_win_rate_model_860000"
+    MODEL_PATH = "/data/feiyu/code/boardGameAI/scout/models/best_diff_model_280000"
     save_raw_samples(MODEL_PATH)
     df_result, corr_result = analyze_correlation("/data/feiyu/code/scout/data/scout_raw_data.jsonl")
