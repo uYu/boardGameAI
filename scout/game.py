@@ -310,27 +310,21 @@ class ScoutGame:
             "round_scores": self.round_scores,
             "phase": self.phase
         }
-        
+    
     def calculate_hand_potential(self, player):
-        """
-        计算手牌结构的“潜力值”。
-        逻辑：识别手牌中所有的 Set(同数) 和 Sequence(顺子)，
-        价值 = sum(组合长度的平方)。
-        这会引导 AI 倾向于保留长组合，而不是拆散它们。
-        """
         hand = self._get_active_hand(player)
         if not hand: return 0
         
         potential = 0
         i = 0
         while i < len(hand):
-            # 1. 尝试寻找从 i 开始的最长 Set
+            # 1. 查找 Set (同数)
             set_len = 1
             for j in range(i + 1, len(hand)):
                 if hand[j] == hand[i]: set_len += 1
                 else: break
             
-            # 2. 尝试寻找从 i 开始的最长 Sequence (升序或降序)
+            # 2. 查找 Sequence (顺子)
             seq_len_asc = 1
             for j in range(i + 1, len(hand)):
                 if hand[j] == hand[j-1] + 1: seq_len_asc += 1
@@ -343,12 +337,14 @@ class ScoutGame:
                 
             best_local_len = max(set_len, seq_len_asc, seq_len_desc)
             
-            # 评分公式：长度的平方（鼓励更长的组合）
-            # 例如：[5,5,5] = 9分, 而 [5,2,5,5] = 1+4=5分
+            # 评分逻辑：
+            # 长度 1: 1分
+            # 长度 2: 4分 (增量 3)
+            # 长度 3: 9分 (增量 5)
             if best_local_len > 1:
                 potential += (best_local_len ** 2)
                 i += best_local_len
             else:
-                potential += 1 # 单张牌 1 分
+                potential += 1
                 i += 1
         return potential

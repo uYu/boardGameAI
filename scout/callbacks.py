@@ -83,3 +83,26 @@ class ScoutWinRateCallback(BaseCallback):
                     print(f"检测到历史最高分差！模型已保存。")
 
         return True
+
+class SelfPlayUpdateCallback(BaseCallback):
+    def __init__(self, update_freq: int, save_path: str, verbose=0):
+        super().__init__(verbose)
+        self.update_freq = update_freq
+        self.save_path = save_path
+        if not os.path.exists(save_path):
+            os.makedirs(save_path)
+
+    def _on_step(self) -> bool:
+        # 每隔 update_freq 步更新一次对手
+        if self.n_calls % self.update_freq == 0:
+            path = os.path.join(self.save_path, "latest_opponent.zip")
+            self.model.save(path)
+            
+            # 更新训练环境中的对手 (env 是 ActionMasker，所以要访问 .unwrapped)
+            if hasattr(self.training_env.envs[0].unwrapped, 'opponent_policy'):
+                # 重新加载策略给对手使用
+                self.training_env.envs[0].unwrapped.opponent_policy = self.model
+            
+            if self.verbose > 0:
+                print(f"--- [Self-Play] 对手模型已更新 (Step: {self.num_timesteps}) ---")
+        return True

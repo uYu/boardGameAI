@@ -11,68 +11,66 @@ import numpy as np
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
 class ScoutTransformerExtractor(BaseFeaturesExtractor):
-    def __init__(self, observation_space, d_model=512, nhead=4, num_layers=3, features_dim=512):
+    def __init__(self, observation_space, d_model=256, nhead=8, num_layers=4, features_dim=512):
         super().__init__(observation_space, features_dim)
         
-        # 输入维度: (Batch, Channels, 16)
-        self.in_channels = observation_space.shape[0]
-        self.seq_len = 16
-        self.d_model = d_model
-
-        # 1. 输入投影层：将每张牌的 90+ 维特征转为 Transformer 的向量
-        self.input_projection = nn.Linear(self.in_channels, d_model)
+        # 拆分特征索引 (根据你之前的 93 层定义)
+        # 0-33 是手牌、桌面、背板、连接性 (序列相关)
+        # 34-92 是统计、对手、历史 (全局相关)
+        self.seq_channels = 34 
+        self.global_channels = 93 - 34
         
-        # 2. 位置编码：因为 Scout 位置固定，我们使用可学习的位置编码
-        self.pos_embedding = nn.Parameter(th.randn(1, self.seq_len, d_model))
+        # 序列处理流
+        self.seq_projection = nn.Linear(self.seq_channels, d_model)
+        self.cls_token = nn.Parameter(th.randn(1, 1, d_model))
+        self.pos_embedding = nn.Parameter(th.randn(1, 17, d_model))
         
-        # 3. Transformer Encoder 层
-        # batch_first=True 方便处理 (Batch, Seq, Dim) 数据
         encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model, 
-            nhead=nhead, 
-            dim_feedforward=d_model * 4,
-            dropout=0.1,
-            activation='gelu',
-            batch_first=True
+            d_model=d_model, nhead=nhead, dim_feedforward=d_model*2, 
+            dropout=0.1, activation='gelu', batch_first=True
         )
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        
-        # 4. 最终输出层
-        self.output_layer = nn.Sequential(
-            nn.Linear(d_model, features_dim),
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+
+        # 全局处理流 (简单的 MLP)
+        self.global_mlp = nn.Sequential(
+            nn.Linear(self.global_channels, 128),
+            nn.ReLU(),
+            nn.Linear(128, 128)
+        )
+
+        # 最终融合层
+        self.fc = nn.Sequential(
+            nn.Linear(d_model + 128, features_dim),
             nn.LayerNorm(features_dim),
             nn.ReLU()
         )
 
     def forward(self, observations):
-        # observations 形状: (Batch, Channels, 16)
+        # observations: (Batch, 93, 16)
+        # 1. 拆分特征
+        seq_info = observations[:, :self.seq_channels, :].transpose(1, 2) # (B, 16, 34)
+        # 全局信息取平均（因为它们在 16 个宽度上是平铺重复的）
+        global_info = observations[:, self.seq_channels:, 0] # (B, 59)
+
+        # 2. 处理序列 (Transformer)
+        b = seq_info.shape[0]
+        x = self.seq_projection(seq_info)
+        cls_tokens = self.cls_token.expand(b, -1, -1)
+        x = th.cat((cls_tokens, x), dim=1) + self.pos_embedding
         
-        # 步骤 A: 准备 Padding Mask
-        # 假设第一行特征 (h_mat[0]) 在没有牌的位置是 0
-        # src_key_padding_mask 要求: 有牌的地方为 False, 补零的地方为 True
-        # 我们取所有通道的和，如果全为 0，说明这一列是空位
-        padding_mask = (observations.sum(dim=1) == 0) # (Batch, 16)
+        # Padding Mask: 检查手牌第一层是否为0
+        padding_mask = th.cat([
+            th.zeros((b, 1), dtype=th.bool, device=x.device),
+            (observations[:, 0, :] == 0)
+        ], dim=1)
         
-        # 步骤 B: 维度转换 (Batch, Channels, 16) -> (Batch, 16, Channels)
-        x = observations.transpose(1, 2) 
-        
-        # 步骤 C: 投影到 d_model 维度并加上位置编码
-        x = self.input_projection(x) # (Batch, 16, d_model)
-        x = x + self.pos_embedding
-        
-        # 步骤 D: 进入 Transformer 编码
-        # 传入 padding_mask，让 Self-Attention 忽略掉没有牌的列
-        encoded = self.transformer_encoder(x, src_key_padding_mask=padding_mask) # (Batch, 16, d_model)
-        
-        # 步骤 E: 聚合全局信息
-        # 我们不直接 Flatten，而是使用 Masked Global Average Pooling
-        # 只对非 Padding 的位置取平均
-        mask_expanded = (~padding_mask).unsqueeze(-1).float() # (Batch, 16, 1)
-        sum_features = (encoded * mask_expanded).sum(dim=1)
-        count = mask_expanded.sum(dim=1).clamp(min=1)
-        global_features = sum_features / count # (Batch, d_model)
-        
-        return self.output_layer(global_features)
+        latent_seq = self.transformer(x, src_key_padding_mask=padding_mask)[:, 0, :]
+
+        # 3. 处理全局 (MLP)
+        latent_global = self.global_mlp(global_info)
+
+        # 4. 融合
+        return self.fc(th.cat([latent_seq, latent_global], dim=-1))
 
 # ==========================================
 class AlphaDouMlpExtractor(nn.Module):
